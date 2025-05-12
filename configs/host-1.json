@@ -1,0 +1,5 @@
+{
+	"name": "host-1",
+	"port": 8000,
+	"args": ["miner"]
+}

@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+
+import sys
+import json
+import pathlib
+import argparse
+import subprocess
+
+from dataclasses import dataclass
+
+SESSION_PREFIX = "vnet"
+START_SHELL = "/bin/bash"
+
+VCLIENT_BINARY_NAME = "client"
+VSWITCH_BINARY_NAME = "vswitch"
+
+VERBOSE_MODE = False
+
+
+# Simple wrapper for running a shell command
+def do_run(cmd, check=True, shell=True):
+    global VERBOSE_MODE
+
+    if VERBOSE_MODE:
+        print("Executing:  {}".format(" ".join(cmd) if isinstance(cmd, list) else cmd))
+
+    proc = subprocess.run(cmd, shell=shell, text=True,
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+    if check and proc.returncode != 0:
+        do_exit(f"Command exited with {proc.returncode}:  {proc.stdout}")
+
+    output = proc.stdout
+    return output
+
+
+def check_bin_exists(bin_name):
+    bin_path = pathlib.Path(bin_name)
+
+    if not bin_path.exists():
+        print(f"Could not find binary:  {bin_path}, exiting")
+        sys.exit(1)
+
+
+def load_json(input_file):
+    with open(input_file, "r") as fd:
+        json_data = json.load(fd)
+        return json_data
+
+
+def write_json(d, target_file):
+    with open(target_file, "w") as fd:
+        json.dump(d, fd, indent=True, sort_keys=True)
+
+
+def kill_open_sessions():
+    vnet_sessions = do_run("""tmux list-sessions 2>/dev/null | grep "vnet-" | awk '{ print $1; }' | sed 's/\://g'""")
+    sessions = vnet_sessions.split(" ")
+    for session in sessions:
+        print(f"Killing session {session}")
+        do_run(f"tmux kill-session -t {session}", check=False)
+
+
+def do_exit(message):
+    print(message)
+    sys.exit(1)
+
+
+def main(input_args):
+    global VERBOSE_MODE
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("--bin-dir", type=str, default=".",
+                        help="Path to directory with vclient/vswitch binaries")
+    parser.add_argument("--clean", action="store_true",
+                        help="Terminate any open virtual network sessions before starting")
+    parser.add_argument("configs_dir", type=str, help="Directory with host configs")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Print commands as they are run")
+
+    args = parser.parse_args(input_args)
+
+    if args.verbose:
+        VERBOSE_MODE = True
+
+    if args.clean:
+        kill_open_sessions()
+
+    configs_path = pathlib.Path(args.configs_dir)
+    if not configs_path.exists():
+        do_exit(f"Could not find net directory {configs_path}, aborting")
+
+    config_files = [f for f in configs_path.glob("*.json")]
+    if len(config_files) == 0:
+        do_exit(f"No config files found in {configs_path}")
+
+    host_bin = pathlib.Path(args.bin_dir).resolve() / VCLIENT_BINARY_NAME
+    vswitch_bin = pathlib.Path(args.bin_dir).resolve() / VSWITCH_BINARY_NAME
+
+    check_bin_exists(vswitch_bin)
+    check_bin_exists(host_bin)
+
+    network_name = configs_path.stem
+    session_name = "{}-{}".format(SESSION_PREFIX, network_name)
+    
+    # Generate the command to run in each session
+    # Run each pane as the node + a shell after so that user can press
+    # Ctrl+C and get a shell, rather than killing the pane
+    def _cmd(config_file=None):
+        if config_file:
+            cmd = f"{host_bin} {config_file} ; {START_SHELL}"
+        else:
+            cmd = f"{vswitch_bin} ; {START_SHELL}"
+        return cmd
+
+    # Create the session with the first node
+    do_run([
+        "tmux","new-session",
+        "-s", session_name,
+        "-d", _cmd()
+    ], shell=False)
+    do_run(f"tmux select-pane -T vswitch")
+
+    # Set session options
+    do_run('tmux set-option -s pane-border-status top')
+    do_run('tmux set-option -s pane-border-format "#{pane_index}: #{pane_title}"')
+
+    for cfg in config_files:
+        node_name = cfg.stem
+        do_run([
+            "tmux", "split-window",
+            _cmd(config_file=cfg)
+        ], shell=False)
+
+        do_run(f"tmux select-pane -T {node_name}")
+
+        # Even out the layout (use tiled to accommodate the maximum
+	# number of panes)
+        do_run(f"tmux select-layout tiled")
+
+    # Finally, attach to the session
+    do_run(f"tmux attach-session -t {session_name}")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

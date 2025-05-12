@@ -1,0 +1,5 @@
+{
+	"name": "host-3",
+	"port": 8002,
+	"args": ["nominer"]
+}
