@@ -37,6 +37,7 @@ Traverse backwards until we find the block, constructing a new headblock
 func (lc *LeChain) traverseBack(hb *HeadBlock, target_hash protocol.HashType, bp BlockPredicate, tbp TwoBlockPredicate) (*HeadBlock, error) {
 	// fmt.Printf("t block: %08b\n", target_hash)
 	// fmt.Printf("f block: %08b\n", hb.block_hash)
+	seen := make(map[protocol.HashType]bool)
 	lbm := hb.lbm
 	block, err := lc.getBlock(hb.block_hash)
 	if err != nil {
@@ -45,6 +46,10 @@ func (lc *LeChain) traverseBack(hb *HeadBlock, target_hash protocol.HashType, bp
 	// fmt.Println("we have this head")
 	var steps uint32 = 0
 	for !bytes.Equal(block.BlockHash[:], target_hash[:]) {
+		if _, ok := seen[block.BlockHash]; ok == true {
+			return &HeadBlock{}, errors.New("cycle detected in traversing back through blocks")
+		}
+		seen[block.BlockHash] = true
 		if bytes.Equal(block.BlockHash[:], GENESIS_HASH[:]) || steps == hb.length-1 {
 			return &HeadBlock{}, errors.New("dead end: back to the genesis block")
 		}
